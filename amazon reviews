@@ -1,0 +1,251 @@
+# This Python 3 environment comes with many helpful analytics libraries installed
+# It is defined by the kaggle/python docker image: https://github.com/kaggle/docker-python
+# For example, here's several helpful packages to load in 
+
+import numpy as np # linear algebra
+import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
+
+# Input data files are available in the "../input/" directory.
+# For example, running this (by clicking run or pressing Shift+Enter) will list the files in the input directory
+
+import os
+print(os.listdir("../input"))
+
+# Any results you write to the current directory are saved as output.
+
+from gensim.models.doc2vec import Doc2Vec, TaggedDocument, FAST_VERSION
+from gensim.test.utils import get_tmpfile
+from collections import Counter
+import string
+from nltk import tokenize
+import logging
+logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
+rootLogger = logging.getLogger()
+rootLogger.setLevel(logging.INFO)
+import time
+from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegressionCV
+import matplotlib.pyplot as plt
+import random
+import keras
+
+data = pd.read_csv("../input/Reviews.csv")[['Summary', 'Text']]
+len(data)
+len(data['Summary'].dropna())
+len(data['Text'].dropna())
+my_doc = data['Summary'] + ' ' + data['Text']
+type(my_doc)
+len(my_doc)
+my_doc = my_doc.replace(np.nan, '', regex=True)
+my_doc = my_doc.dropna()
+len(my_doc)
+my_doc.head()
+
+t_tab = str.maketrans('', '', string.punctuation)
+
+reviews = []
+for review in my_doc:
+    words = []
+    for word in review.split():
+        words.append(word.lower().translate(str.maketrans(t_tab)))
+        #print(word)
+    reviews.append(words)
+#break
+
+n_rev = len(reviews)
+#reviews[:3]
+
+documents = [TaggedDocument(doc, [i]) for i, doc in enumerate(reviews)]
+len(documents)
+documents[0]
+reviews[0]
+
+wordlist = [item for sublist in reviews for item in sublist]
+wordlist[:5]
+wordfreq = Counter(wordlist)
+type(wordfreq)
+w_tokens = len(wordlist)
+V = len(wordfreq)
+
+#wordfreq.most_common()[:10]
+
+hs = 1
+ns = 1 - hs
+N = 300
+C = 5
+minimum = 5
+t = 0.001
+k = 20
+exp = 0.75
+
+def train_doc2vec_model(labeled_sentences, dm_db, epochs):
+    model = Doc2Vec(vector_size = N, dm = dm_db, window = C, min_count = minimum, workers = 4, alpha=0.05, min_alpha=0.025)
+    model.build_vocab(labeled_sentences)
+    for epoch in range(epochs):
+        model.train(labeled_sentences, total_examples = len(labeled_sentences), epochs = 1)
+        model.alpha -= 0.002 
+        model.min_alpha = model.alpha
+    
+    return model
+
+def train_doc2vec_model(labeled_sentences, dm_db, epochs):
+    model = Doc2Vec(vector_size = N, dm = dm_db, window = C, min_count = minimum, workers = 4)
+    model.build_vocab(labeled_sentences)
+    model.train(labeled_sentences, total_examples = len(labeled_sentences), epochs = epochs)
+    return model
+
+
+assert FAST_VERSION > -1
+
+start = time.time()
+dm = train_doc2vec_model(documents, 1, 5)
+end = time.time()
+dm_runtime = end - start
+fname = get_tmpfile("dm_5ep")
+dm.save(fname)
+dm = Doc2Vec.load(fname)
+
+start = time.time()
+db = train_doc2vec_model(documents, 0, 5)
+end = time.time()
+db_runtime = end - start
+fname = get_tmpfile("db_5ep")
+db.save(fname)
+db = Doc2Vec.load(fname)
+
+dmv = dm.docvecs
+dbv = db.docvecs
+
+dmv_mat = np.empty((len(documents), N))
+dbv_mat = np.empty((len(documents), N))
+for i in range(len(documents)):
+    dmv_mat[i] = dmv[i]
+    dbv_mat[i] = dbv[i]
+
+dmv_mat.shape
+dbv_mat.shape
+
+# choose 1 of 3 options
+dv_mat = dmv_mat
+dv_mat = dbv_mat
+dv_mat = np.concatenate((dmv_mat, dbv_mat), axis=1)
+####
+
+dv_mat.shape
+dims = dv_mat.shape[1]
+
+scores = pd.read_csv("../input/Reviews.csv")['Score']
+len(scores.dropna())
+type(scores)
+scores.shape
+scores.value_counts()
+scores.value_counts().plot.bar()
+
+samp_ind = []
+for j in range(len(scores.value_counts())):
+    #print(j + 1)
+    y_ind = [i for i, x in enumerate(scores) if x == j + 1]
+    samp_ind.append(random.sample(y_ind, 10000))
+
+samp_ind2 = [item for sublist in samp_ind for item in sublist]
+len(samp_ind2)
+
+x_samp = dv_mat[samp_ind2, :]
+x_samp.shape
+y_samp = scores[samp_ind2]
+y_samp.shape
+y_samp.value_counts().plot.bar()
+
+X_train, X_test, y_train, y_test = train_test_split(x_samp, y_samp, test_size=0.2)
+X_train.shape
+X_test.shape
+y_train.shape
+y_test.shape
+
+y_train_mat = keras.utils.to_categorical(y_train-1, num_classes = 5)
+y_test_mat = keras.utils.to_categorical(y_test-1, num_classes = 5)
+y_train_mat.shape
+y_test_mat.shape
+#y_train_mat[:50]
+#y_train[:50]
+
+class_model = keras.Sequential()
+class_model.add(keras.layers.Dense(50, input_shape=(dims,), activation = "relu"))
+class_model.add(keras.layers.Dense(5, activation = "sigmoid"))
+
+class_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+class_model.fit(X_train, y_train_mat, validation_split=0.25, epochs=5)
+
+test_loss, test_acc = class_model.evaluate(X_test, y_test_mat)
+
+print('Test accuracy:', test_acc)
+
+nnpreds = class_model.predict_classes(X_test) + 1
+pd.Series(nnpreds).value_counts().plot.bar()
+preds_prob = class_model.predict(X_test)
+preds_classes = preds_prob.argmax(axis=-1) + 1
+pd.Series(preds_classes).value_counts().plot.bar()
+
+preds_prob[0]
+preds_prob[0].argmax() + 1
+y_test_mat[0]
+y_test.values[0]
+
+log_r = LogisticRegression(solver='newton-cg', multi_class='multinomial', penalty='l2')
+log_r.fit(X_train, y_train)
+log_r.score(X_test, y_test)
+preds = log_r.predict(X_test)
+pd.Series(preds).value_counts().plot.bar()
+pd.Series(y_test).value_counts().plot.bar()
+pd.Series(y_train).value_counts().plot.bar()
+
+log_rcv = LogisticRegressionCV(solver='newton-cg', multi_class='multinomial', cv=4)
+log_rcv.fit(X_train, y_train)
+log_rcv.score(X_test, y_test)
+preds = log_rcv.predict(X_test)
+pd.Series(preds).value_counts().plot.bar()
+
+from sklearn.ensemble import RandomForestClassifier
+clf = RandomForestClassifier(n_estimators=100, max_depth=2, random_state=0)
+clf.fit(X_train, y_train)
+clf.score(X_test, y_test)
+
+##### general scores = {positive=1, negative=0}
+##### w/o neutral
+
+gen_scores = [0 if i < 4 else 1 for i in scores]
+len(gen_scores)
+pd.Series(gen_scores).value_counts()
+pd.Series(gen_scores).value_counts().plot.bar()
+
+samp_ind3 = [i for i in samp_ind2 if scores[i] != 3]
+len(samp_ind3)
+
+x_samp = dv_mat[samp_ind3, :]
+x_samp.shape
+y_samp = pd.Series(gen_scores)[samp_ind3]
+y_samp.shape
+y_samp.value_counts().plot.bar()
+
+X_train, X_test, y_train, y_test = train_test_split(x_samp, y_samp, test_size=0.2)
+X_train.shape
+X_test.shape
+y_train.shape
+y_test.shape
+
+class_model = keras.Sequential()
+class_model.add(keras.layers.Dense(50, input_shape=(dims,), activation = "relu"))
+class_model.add(keras.layers.Dense(1, activation = "sigmoid"))
+
+class_model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+class_model.fit(X_train, y_train, validation_split=0.25, epochs=5)
+
+test_loss, test_acc = class_model.evaluate(X_test, y_test)
+
+print('Test accuracy:', test_acc)
+
+log_r = LogisticRegression(solver='saga', multi_class='ovr', penalty='l1')
+log_r.fit(X_train, y_train)
+log_r.score(X_test, y_test)
